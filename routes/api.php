@@ -26,11 +26,11 @@ Route::group([
     'as' => 'api.'
 ], function () {
     // *** 簡訊列表 ***
-    Route::get('cloud_message', 'api\Ite2SmsController@index');
+    Route::get('ite2_sms', 'api\Ite2SmsController@index');
     // *** 簡訊列表By id ***
-    Route::get('cloud_message/{id}', 'api\Ite2SmsController@show');
+    Route::get('ite2_sms/{id}', 'api\Ite2SmsController@show');
     // *** 新增簡訊 ***
-    Route::post('cloud_message', 'api\Ite2SmsController@store');
+    Route::post('ite2_sms', 'api\Ite2SmsController@store');
 ////    // *** 查詢包裹狀態 ***
 ////    Route::get('packageStatus/{order_from_id}', 'api\PackageInfoController@getPackageInfoByTrackingId')->where('order_from_id','[0-9]+');
 });

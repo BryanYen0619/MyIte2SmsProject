@@ -9,39 +9,48 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use phpDocumentor\Reflection\Types\Self_;
 
-class Ite2SmsController extends Controller
-{
+class Ite2SmsController extends Controller {
 
     protected $dataRepo;
 
-    public function __construct(Ite2SmsDataRepository $dataRepo)
-    {
+    public function __construct(Ite2SmsDataRepository $dataRepo) {
         $this->dataRepo = $dataRepo;
     }
 
     /**
      * @return \Illuminate\Http\Response
      */
-    public function index($mesageId)
-    {
+    public function index($mesageId) {
         $sqlData = $this->dataRepo->index($mesageId);
-        return response()->json(['data' => $sqlData]);
+        if ($sqlData) {
+            // 檢查SMS發送狀態
+            $smsResponseData = self::getSmsSendResponseStatus($sqlData);
+
+            return response()->json(['data' => $smsResponseData]);
+        } else {
+            return response()->json(['data' => array()]);
+        }
     }
 
     /**
      * @return \Illuminate\Http\Response
      */
-    public function show($mesageId, $id)
-    {
+    public function show($mesageId, $id) {
         $sqlData = $this->dataRepo->find($mesageId, $id);
-        return response()->json(['data' => $sqlData]);
+        if ($sqlData) {
+            // 檢查SMS發送狀態
+            $smsResponseData = self::getSmsSendResponseStatus($sqlData);
+
+            return response()->json(['data' => $smsResponseData]);
+        } else {
+            return response()->json(['data' => array()]);
+        }
     }
 
     /**
      * @return \Illuminate\Http\Response
      */
-    public function store($messageId, Request $request)
-    {
+    public function store($messageId, Request $request) {
         if (empty($messageId)) {
             return response()->json(['errorCode' => 501, 'errorMessage' => '請指定message id'], 403);
         }
@@ -51,7 +60,6 @@ class Ite2SmsController extends Controller
         }
 
         $dataList = json_decode($request->getContent(), true);
-
         if (empty($dataList)) {
             return response()->json(['errorCode' => 503, 'errorMessage' => 'Json解析失敗'], 403);
         }
@@ -73,122 +81,48 @@ class Ite2SmsController extends Controller
         $tempUserId = -1;
         for ($i = 0; $i < count($jsonOriginData); $i++) {
             $userId = $jsonOriginData[$i]['user_id'];
-            $type = $jsonOriginData[$i]['is_push'];
             $phone = $jsonOriginData[$i]['phone'];
 
             // SMS
-            if ($type == 0) {
-                if ($tempUserId != $userId) {
-                    // 判斷imageUrl是否有資料，沒資料才發SMS
-                    if (empty($imageUrl)) {
-                        $dataId = self::sendSMS($messageId, $userId, $phone, $message);
-                        if ($dataId == -1) {
-                            $responseData = Array();
-                            self::insertLog($messageId, $userId, $responseData, $type, 0, "SMS發送失敗");
-                        }
-                    } else {
+            if ($tempUserId != $userId) {
+                // 判斷imageUrl是否有資料，沒資料才發SMS
+                if (empty($imageUrl)) {
+                    $dataId = self::sendSMS($messageId, $userId, $phone, $message);
+                    if ($dataId == -1) {
                         $responseData = Array();
-                        self::insertLog($messageId, $userId, $responseData, $type, 0, "SMS不發送圖片");
+                        $responseData = array_add($responseData, 'send_status_code', 601);
+                        $responseData = array_add($responseData, 'send_status', "SMS發送失敗");
+
+                        $dataId = self::insertDataDB($messageId, $userId, $responseData);
                     }
-
-                    $tempUserId = $userId;
-                }
-            } else if ($type == 1) {    // FCM
-                $token = $jsonOriginData[$i]['token'];
-
-                $targetPage = "";
-                if (isset($jsonOriginData[$i]['target_page'])) {
-                    $targetPage = $jsonOriginData[$i]['target_page'];
-                }
-
-                $badge = 0;
-                if (isset($jsonOriginData[$i]['badge'])) {
-                    $badge = $jsonOriginData[$i]['badge'];
-                }
-
-                $postFcmRequest = FcmController::goPushNotification($token, $message, $imageUrl, $badge, $targetPage);
-                // response get JSON
-                $jsonData = json_decode($postFcmRequest, true);
-                if ($jsonData != null) {
-                    $successCode = (int)$jsonData['success'];
-                    $errorCode = (int)$jsonData['failure'];
+                } else {
                     $responseData = Array();
-                    $responseData = array_add($responseData, 'multicast_id', $jsonData['multicast_id']);
+                    $responseData = array_add($responseData, 'send_status_code', 602);
+                    $responseData = array_add($responseData, 'send_status', "SMS不發送圖片");
 
-                    if ($successCode == 1 && $errorCode == 0) {
-                        $responseData = array_add($responseData, 'count', 1);
-                        self::insertLog($messageId, $userId, $responseData, $type, 18);
-                    } else {
-                        // 推波發送失敗切換SMS
-                        // 判斷imageUrl是否有資料，沒資料才發SMS
-//                        if (empty($imageUrl)) {
-//                            $dataId = self::sendSMS($messageId, $userId, $phone, $message);
-//                            if ($dataId == -1) {
-//                                self::insertLog($messageId,$userId,$responseData,$type, 0, "SMS發送失敗");
-//                            }
-//                        } else {
-                        $resultJson = $jsonData['results'];
-                        foreach ($resultJson as $item) {
-                            $fcmErrorMessage = $item['error'];
-                        }
-
-                        if (!empty($fcmErrorMessage)) {
-                            self::insertLog($messageId, $userId, $responseData, $type, 19, $fcmErrorMessage);
-                        }
-//                        }
-                    }
+                    $dataId = self::insertDataDB($messageId, $userId, $responseData);
                 }
+
+                $tempUserId = $userId;
             }
         }
 
         return response()->json(['errorCode' => 0, 'message' => '執行完成'], 200);
     }
 
-    private function insertStatusDB($responseData, $errorCode, $fcmErrorMessage = null)
-    {
-        // get error id from db table
-        $errorCodeIdReq = Ite2SmsStatusRepository::getErrorCodeId($errorCode);
-        if ($errorCodeIdReq) {
-
-            $errorCodeId = -1;
-            // get error id from error code
-            foreach ($errorCodeIdReq as $item) {
-                $errorCodeId = $item->id;
-            }
-
-            $responseData = array_add($responseData, 'error_code_id', $errorCodeId);
-            if ($fcmErrorMessage != null) {
-                $responseData = array_add($responseData, 'error_message', $fcmErrorMessage);
-            }
-
-            // create status data
-            $statusId = (new \App\Repositories\Ite2SmsStatusRepository)->create($responseData);
-            if ($statusId) {
-                return $statusId;
-            }
-        }
-
-        return null;
-    }
-
-    private function insertDataDB($type, $userId, $messageId, $statusId)
-    {
-        $insertData = Array();
-        $insertData = array_add($insertData, 'message_id', $messageId);
-        $insertData = array_add($insertData, 'user_id', $userId);
-        $insertData = array_add($insertData, 'is_push', $type);
-        $insertData = array_add($insertData, 'status_id', $statusId);
+    private function insertDataDB($messageId, $userId, $responseData) {
+        $responseData = array_add($responseData, 'message_id', $messageId);
+        $responseData = array_add($responseData, 'user_id', $userId);
 
         // create data
-        $dataId = $this->dataRepo->create($insertData);
+        $dataId = $this->dataRepo->create($responseData);
         if ($dataId) {
             return $dataId;
         }
         return null;
     }
 
-    private function sendSMS($messageId, $userId, $phone, $message)
-    {
+    private function sendSMS($messageId, $userId, $phone, $message) {
         // 測試發送成功
 //        $postSmsRequest = "{
 //\"RowId\":\"201812270\", \"Cnt\":\"1\", \"ErrorCode\":\"0\"
@@ -196,38 +130,199 @@ class Ite2SmsController extends Controller
         // 測試空資料
 //        $postSmsRequest = "{}";
         // 測試Error Code
-//        $postSmsRequest = "{\"ErrorCode\":\"2\"}";
-
+//        $postSmsRequest = "{\"ErrorCode\":\"19\"}";
         // post ite2 Sms Api
         $postSmsRequest = Ite2SmsApiController::postSmsRequest($phone, $message);
         // response get JSON
         $jsonData = json_decode($postSmsRequest, true);
         if ($jsonData != null) {
-            $errorCode = (int)$jsonData['ErrorCode'];
+            $errorCode = (int) $jsonData['ErrorCode'];
             $responseData = Array();
 
             if ($errorCode == 0) {
-                $responseData = array_add($responseData, 'row_id', $jsonData['RowId']);
+                $responseData = array_add($responseData, 'row_id', (int) $jsonData['RowId']);
                 $responseData = array_add($responseData, 'count', $jsonData['Cnt']);
             }
 
-            self::insertLog($messageId, $userId, $responseData, 0, $errorCode);
+            $statusMessage = '';
+            switch ($errorCode) {
+                case 0 :
+                    $statusMessage = '簡訊已發至 SMS server';
+                    break;
+                case 1 :
+                    $statusMessage = '傳入參數有誤';
+                    break;
+                case 2 :
+                    $statusMessage = '帳號/密碼錯誤';
+                    break;
+                case 3 :
+                    $statusMessage = '電話號碼格式錯誤';
+                    break;
+                case 4 :
+                    $statusMessage = '帳號已遭暫停使用';
+                    break;
+                case 6 :
+                    $statusMessage = '不允許的 IP';
+                    break;
+                case 7 :
+                    $statusMessage = '預約時間錯誤';
+                    break;
+                case 9 :
+                    $statusMessage = '簡訊內容為空白';
+                    break;
+                case 10 :
+                    $statusMessage = '資料庫存取或系統錯誤';
+                    break;
+                case 11 :
+                    $statusMessage = '餘額已為 0';
+                    break;
+                case 12 :
+                    $statusMessage = '超過長簡訊發送字數';
+                    break;
+                case 13 :
+                    $statusMessage = '電話號碼為黑名單';
+                    break;
+                case 14 :
+                    $statusMessage = '僅接受 POST method';
+                    break;
+                case 15 :
+                    $statusMessage = '指定發送代碼無效';
+                    break;
+                case 16 :
+                    $statusMessage = '失效時間錯誤';
+                    break;
+                case 17 :
+                    $statusMessage = '沒有權限使用 API';
+                    break;
+                case 19 :
+                    $statusMessage = '查無資料';
+                    break;
+                default :
+                    break;
+            }
 
-            return 0;
+            $responseData = array_add($responseData, 'send_status_code', $errorCode);
+            $responseData = array_add($responseData, 'send_status', $statusMessage);
+
+            $dataId = self::insertDataDB($messageId, $userId, $responseData);
+            if ($dataId) {
+                return 0;
+            } else {
+                return -1;
+            }
         } else {
             return -1;
         }
     }
 
-    private function insertLog($messageId, $userId, $responseData, $type, $errorCode, $errorMessage = null)
-    {
-        $statusId = self::insertStatusDB($responseData, $errorCode, $errorMessage);
-        if ($statusId) {
-            $dataId = self::insertDataDB($type, $userId, $messageId, $statusId);
-            if ($dataId) {
-                Ite2SmsStatusRepository::updatePublishedDate($messageId);
+    private function getSmsSendResponseStatus($dataReq) {
+        foreach ($dataReq as $data) {
+            $rowId = $data->row_id;
+
+            // check mode from ite2 sms
+            if (!empty($rowId)) {
+                $smsStatusData = Ite2SmsApiController::postSmsStatusRequest($data->row_id);
+                if ($smsStatusData) {
+                    // response get JSON
+                    $jsonData = json_decode($smsStatusData, true);
+                    if ($jsonData != null) {
+                        $errorCode = (int) $jsonData['ErrorCode'];
+                        if ($errorCode == 0) {
+                            $smsResponseStatusCode = $jsonData['CheckMode'];
+
+                            $smsResponseStatusMessage = '';
+                            switch ($smsResponseStatusCode) {
+                                case 'CE':
+                                    $smsResponseStatusMessage = '指定特碼無效';
+                                    break;
+                                case 'CK':
+                                    $smsResponseStatusMessage = '已處理';
+                                    break;
+                                case 'CM':
+                                    $smsResponseStatusMessage = '客戶拒收商務簡訊';
+                                    break;
+                                case 'CS':
+                                    $smsResponseStatusMessage = '無法送達';
+                                    break;
+                                case 'E1':
+                                    $smsResponseStatusMessage = '電話號碼錯誤';
+                                    break;
+                                case 'E2':
+                                    $smsResponseStatusMessage = '黑名單';
+                                    break;
+                                case 'E3':
+                                    $smsResponseStatusMessage = '特碼錯誤';
+                                    break;
+                                case 'E4':
+                                    $smsResponseStatusMessage = '電話號碼異常';
+                                    break;
+                                case 'EM':
+                                    $smsResponseStatusMessage = '空號';
+                                    break;
+                                case 'EP':
+                                    $smsResponseStatusMessage = '空白簡訊';
+                                    break;
+                                case 'ER':
+                                    $smsResponseStatusMessage = '通訊錯誤/發送失敗';
+                                    break;
+                                case 'EV':
+                                    $smsResponseStatusMessage = '簡訊內容含無效變數';
+                                    break;
+                                case 'EX':
+                                    $smsResponseStatusMessage = '逾時不發';
+                                    break;
+                                case 'FD':
+                                    $smsResponseStatusMessage = '已送達電信業者';
+                                    break;
+                                case 'LT':
+                                    $smsResponseStatusMessage = '宵禁';
+                                    break;
+                                case 'NA':
+                                    $smsResponseStatusMessage = '不被放行';
+                                    break;
+                                case 'ND':
+                                    $smsResponseStatusMessage = '資料過期/無此資料';
+                                    break;
+                                case 'NI':
+                                    $smsResponseStatusMessage = '指定 ISP 未啟用';
+                                    break;
+                                case 'NP':
+                                    $smsResponseStatusMessage = '點數不足';
+                                    break;
+                                case 'OF':
+                                    $smsResponseStatusMessage = '未開機/收不到訊號';
+                                    break;
+                                case 'OK':
+                                    $smsResponseStatusMessage = '發送成功';
+                                    break;
+                                case 'SD':
+                                    $smsResponseStatusMessage = '已發送';
+                                    break;
+                                case 'SE':
+                                    $smsResponseStatusMessage = '發送錯誤/發送失敗';
+                                    break;
+                                case 'ST':
+                                    $smsResponseStatusMessage = '已預約';
+                                    break;
+                                case 'TE':
+                                    $smsResponseStatusMessage = '簡訊內容無法送達';
+                                    break;
+                                case 'WT':
+                                    $smsResponseStatusMessage = '等待放行';
+                                    break;
+                                default :
+                                    break;
+                            }
+
+                            $data->response_status_code = $smsResponseStatusCode;
+                            $data->response_status = $smsResponseStatusMessage;
+                        }
+                    }
+                }
             }
         }
+
+        return $data;
     }
 
 }

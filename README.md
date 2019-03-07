@@ -1,1 +1,0 @@
-# MyIte2SmsProject
