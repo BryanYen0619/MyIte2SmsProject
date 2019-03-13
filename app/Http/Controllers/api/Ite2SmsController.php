@@ -79,6 +79,8 @@ class Ite2SmsController extends Controller {
         }
 
         $tempUserId = -1;
+        $count = 0;
+        $responseList = array();
         for ($i = 0; $i < count($jsonOriginData); $i++) {
             $userId = $jsonOriginData[$i]['user_id'];
             $phone = $jsonOriginData[$i]['phone'];
@@ -87,27 +89,31 @@ class Ite2SmsController extends Controller {
             if ($tempUserId != $userId) {
                 // 判斷imageUrl是否有資料，沒資料才發SMS
                 if (empty($imageUrl)) {
-                    $dataId = self::sendSMS($messageId, $userId, $phone, $message);
-                    if ($dataId == -1) {
-                        $responseData = Array();
-                        $responseData = array_add($responseData, 'send_status_code', 601);
-                        $responseData = array_add($responseData, 'send_status', "SMS發送失敗");
-
-                        $dataId = self::insertDataDB($messageId, $userId, $responseData);
+                    $smsResponse = self::sendSMS($messageId, $userId, $phone, $message);
+                    if ($smsResponse == null) {
+                        $smsResponse = array_add($smsResponse, 'send_status_code', 601);
+                        $smsResponse = array_add($smsResponse, 'send_status', "SMS發送失敗");
                     }
                 } else {
-                    $responseData = Array();
-                    $responseData = array_add($responseData, 'send_status_code', 602);
-                    $responseData = array_add($responseData, 'send_status', "SMS不發送圖片");
-
-                    $dataId = self::insertDataDB($messageId, $userId, $responseData);
+                    $smsResponse = Array();
+                    $smsResponse = array_add($smsResponse, 'send_status_code', 602);
+                    $smsResponse = array_add($smsResponse, 'send_status', "SMS不發送圖片");
                 }
-
+                $insertId = self::insertDataDB($messageId, $userId, $smsResponse);
+                  
+                $response = array();
+                $response = array_add($response, 'errorCode', $smsResponse['send_status_code']);
+                $response = array_add($response, 'message', $smsResponse['send_status']);
+                $response = array_add($response, 'smsId', $insertId);
+                $responseList[$count] = $response;
+                $count++;
+                
                 $tempUserId = $userId;
+                
             }
         }
 
-        return response()->json(['errorCode' => 0, 'message' => '執行完成'], 200);
+        return response()->json(['data'=>$responseList], 200);
     }
 
     private function insertDataDB($messageId, $userId, $responseData) {
@@ -118,7 +124,14 @@ class Ite2SmsController extends Controller {
         $dataId = $this->dataRepo->create($responseData);
         if ($dataId) {
             return $dataId;
+        } else {
+            return -1;
         }
+    }
+    
+    private function updateDB($id, $smsResponseStatusCode, $smsResponseStatusMessage) {
+        // update data
+        $this->dataRepo->update($id, $smsResponseStatusCode, $smsResponseStatusMessage);
         return null;
     }
 
@@ -204,14 +217,17 @@ class Ite2SmsController extends Controller {
             $responseData = array_add($responseData, 'send_status_code', $errorCode);
             $responseData = array_add($responseData, 'send_status', $statusMessage);
 
-            $dataId = self::insertDataDB($messageId, $userId, $responseData);
-            if ($dataId) {
-                return 0;
-            } else {
-                return -1;
-            }
+//            if ($errorCode == 0) {
+//                $dataId = self::insertDataDB($messageId, $userId, $responseData);
+//                if ($dataId) {
+//                    return $dataId;
+//                }
+//            } else {
+//                return $responseData;
+//            }
+            return $responseData;
         } else {
-            return -1;
+            return null;
         }
     }
 
@@ -221,7 +237,7 @@ class Ite2SmsController extends Controller {
 
             // check mode from ite2 sms
             if (!empty($rowId)) {
-                $smsStatusData = Ite2SmsApiController::postSmsStatusRequest($data->row_id);
+                $smsStatusData = Ite2SmsApiController::postSmsStatusRequest($rowId);
                 if ($smsStatusData) {
                     // response get JSON
                     $jsonData = json_decode($smsStatusData, true);
@@ -316,13 +332,15 @@ class Ite2SmsController extends Controller {
 
                             $data->response_status_code = $smsResponseStatusCode;
                             $data->response_status = $smsResponseStatusMessage;
+                            
+                            self::updateDB($data->id, $smsResponseStatusCode, $smsResponseStatusMessage);
                         }
                     }
                 }
             }
         }
 
-        return $data;
+        return $dataReq;
     }
 
 }

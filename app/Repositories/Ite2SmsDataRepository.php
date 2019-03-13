@@ -33,10 +33,23 @@ class Ite2SmsDataRepository {
     public function find($messageId, $id) {
         $dataReq = DB::table('ite2_sms_log')
                 ->select('*')
-                ->where('cloud_message_data.message_id', '=', $messageId)
-                ->where('cloud_message_data.id', '=', $id)
+                ->where('message_id', '=', $messageId)
+                ->where('id', '=', $id)
                 ->get();
 
+        if (!$dataReq) {
+            return null;
+        }
+
+        return $dataReq;
+    }
+    
+    public function update($id, $smsResponseStatusCode, $smsResponseStatusMessage)
+    {
+        $dataReq = DB::table('ite2_sms_log')
+            ->where('id', '=', $id)
+            ->update(['response_status_code' => $smsResponseStatusCode, 'response_status' => $smsResponseStatusMessage]);
+        
         if (!$dataReq) {
             return null;
         }
